@@ -8,6 +8,8 @@ CUDA programs.
 **Please bring your Windows CUDA-Capable laptop with the code downloaded and built.**
 **If you do not have a Windows CUDA-Capable laptop, please find a partner to work with.**
 
+# TODO Before Performance Lab
+
 ## Clone, Build and Run
 The source code consists of a CMake build structure similar to [Project 0](https://github.com/CIS565-Fall-2017/Project0-CUDA-Getting-Started).
 Clone this repository from Github and then run the instructions below.
@@ -37,7 +39,29 @@ Clone this repository from Github and then run the instructions below.
      under "Manage 3D Settings," set "Multi-display/Mixed GPU acceleration"
      to "Single display performance mode".
 
+Note:
+
+* If you start running using `F5`, the command prompt will open and close.
+    * The `F5` shortcut is *Start Debugging*, which means Visual Studio will
+      monitoring your application and it will not run at full performance.
+    * Use `F5` only when you are debugging.
+* Instead, use `Ctrl+F5` when you want to run without debugging. This will run
+  the application at full performance as well as keep the command prompt open
+  after the application ends.
+
 Please ask me or the TAs ahead of time if you have trouble compiling the code. We want to be ready to go at the start of the lab.
+
+## Complete Copy Kernel, Naive Transpose and Shared Memory Transpose
+
+* These are exact copies of the kernels we wrote in the Debugging Lab.
+* In the interest of time, we will not be covering the code of these during the
+  lab. So it is in your best interest to complete the code before the lab.
+    * This will also serve as a revision of the Debugging Lab as we will cover
+      more advance topics and it will make it easier for you.
+* The sections you need to work on are marked by `TODO: COMPLETE THIS`.
+    * There are 3 kernels you need to write, and 3 `blocks`/`grids`
+      configurations you need to set up.
+* Once completed, your output should look like this: ![](images/starter-1.png)
 
 #### Third Party Code
 This repository includes code from [termcolor](https://github.com/ikalnytskyi/termcolor) licensed under the BSD 3 Clause.
