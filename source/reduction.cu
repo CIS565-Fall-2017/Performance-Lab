@@ -93,22 +93,35 @@ __global__ void reduce_stage0(const float* d_idata, float* d_odata, int n)
     extern __shared__ float smem[];
 
     // Calculate 1D Index
-    int idx = 0;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     // Copy input data to shared memory
     // Note: Use block index for shared memory
     // Also check for bounds
+    if(idx < n)
+        smem[threadIdx.x] = d_idata[idx];
 
     // Where do we need to put __syncthreads()? Do we need it at all?
+    __syncthreads();
 
     // Reduce within block
     // Start from c = 1, upto block size, each time doubling the offset
+    for(int c = 1; c < blockDim.x; c *= 2)
+    {
+        // Add only on left index of each level
+        if (threadIdx.x % (2 * c) == 0)
+            smem[threadIdx.x] += smem[threadIdx.x + c];
+
+        __syncthreads();
+    }
 
     // Copy result of reduction to global memory
     // Which index of d_odata do we write to?
     // In which index of smem is the result stored?
     // Do we need another syncthreads before writing to global memory?
     // Use only one thread to write to global memory
+    if(threadIdx.x == 0)
+        d_odata[blockIdx.x] = smem[0];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -126,13 +139,28 @@ __global__ void reduce_stage1(const float* d_idata, float* d_odata, int n)
 
     extern __shared__ float smem[];
 
-    int idx = 0;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if(idx < n)
+        smem[threadIdx.x] = d_idata[idx];
+
+    __syncthreads();
 
     // This is the part that differes from reduce_stage0
     // Reduce within block with coalesced indexing pattern
     // Change the for-loop to use indexing that reduces warp-divergence
+    for(int c = 1; c < blockDim.x; c *= 2)
+    {
+        int index = 2 * c * threadIdx.x;
+        if(index < blockDim.x)
+            smem[index] += smem[index + c];
+
+        __syncthreads();
+    }
 
     // Copy result of reduction to global memory - Same as reduce_stage0
+    if(threadIdx.x == 0)
+        d_odata[blockIdx.x] = smem[0];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -151,14 +179,30 @@ __global__ void reduce_stage2(const float* d_idata, float* d_odata, int n)
 
     extern __shared__ float smem[];
 
-    int idx = 0;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if(idx < n)
+        smem[threadIdx.x] = d_idata[idx];
+
+    __syncthreads();
 
     // This is the part that differes from reduce_stage1
     // Reduce within block with coalesced indexing pattern and avoid bank conflicts
     // Change the for-loop to use indexing that reduces warp-divergence
     // Start from blockDim.x / 2 and divide by 2 until we hit 1
+    for(int c = blockDim.x / 2; c > 0; c >>= 1) /// Do sum in log(N) iterations [c>>=1 = c/=2]
+    {
+        // Inside of the loop is the similar to reduce_stage0 (not reduce_stage1)
+        // The difference is in the if condition
+        if(threadIdx.x < c)
+            smem[threadIdx.x] += smem[threadIdx.x + c];
+
+        __syncthreads();
+    }
 
     // Copy result of reduction to global memory - Same as reduce_stage1
+    if(threadIdx.x == 0)
+        d_odata[blockIdx.x] = smem[0];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -176,16 +220,38 @@ const int stage3_TILE = 2;
 __global__ void reduce_stage3(const float* d_idata, float* d_odata, int n)
 {
     // Allocate dynamic shared memory
+
     extern __shared__ float smem[];
 
     // Calculate 1D index similar to stage2, but multiply by stage3_TILE
-    int idx = 0;
+    int idx = blockIdx.x * blockDim.x * stage3_TILE + threadIdx.x;
 
     // Copy input data to shared memory. Add on load.
+    if(idx < n)
+    {
+        smem[threadIdx.x] = 0;
+        for(int c = 0; c < stage3_TILE; c++)
+        {
+            //Copy and add block data into shared memory
+            if(idx + c * blockDim.x < n)
+                smem[threadIdx.x] += d_idata[idx + c * blockDim.x];
+        }
+    }
+
+    __syncthreads();
 
     // Reduce the block same as reduce_stage2
+    for(int c = blockDim.x / 2; c > 0; c >>= 1)
+    {
+        if(threadIdx.x < c)
+            smem[threadIdx.x] += smem[threadIdx.x + c];
+
+        __syncthreads();
+    }
 
     //Copy result of reduction to global memory - Same as reduce_stage2
+    if(threadIdx.x == 0)
+        d_odata[blockIdx.x] = smem[0];
 }
 
 // warpReduce function for reduce_stag4 that reduces 2 warps into one value
@@ -222,17 +288,40 @@ __global__ void reduce_stage4(const float* d_idata, float* d_odata, int n)
 
     extern __shared__ float smem[];
 
-    int idx = 0;
+    int idx = blockIdx.x * blockDim.x * stage4_TILE + threadIdx.x;
+
+    if(idx < n)
+    {
+        smem[threadIdx.x] = 0;
+        for(int c = 0; c < stage4_TILE; c++)
+        {
+            if(idx + c * blockDim.x < n)
+                smem[threadIdx.x] += d_idata[idx + c * blockDim.x];
+        }
+    }
+
+    __syncthreads();
 
     // Reduce within block with coalesced indexing pattern and avoid bank conflicts
     // Split the block reduction into 2 parts.
     // Part 1 is the same as reduce stage3, but only for c > 32
+    for(int c = blockDim.x / 2; c > 32; c >>= 1)
+    {
+        if(threadIdx.x < c)
+            smem[threadIdx.x] += smem[threadIdx.x + c];
+
+        __syncthreads();
+    }
 
     // Part 2 then uses the warpReduce function to reduce the 2 warps
     // The reason we stop the previous loop at c > 32 is because
     // warpReduce can reduce 2 warps only 1 warp
+    if(threadIdx.x < 32)
+        warpReduce(smem, threadIdx.x);
 
     // Copy result of reduction to global memory - Same as reduce_stage3
+    if(threadIdx.x == 0)
+        d_odata[blockIdx.x] = smem[0];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -260,17 +349,46 @@ __global__ void reduce_stage5(const float* d_idata, float* d_odata, int n)
 
     extern __shared__ float smem[];
 
-    int idx = 0;
+    int idx = blockIdx.x * blockDim.x * stage5_TILE + threadIdx.x;
 
     // Store the threadIdx.x in a register
     int tid = threadIdx.x;
+    if(idx < n)
+    {
+        smem[tid] = 0;
+        // We need the loop to only use statically assigned variables. Otherwise the loop can't unroll.
+        #pragma unroll
+        for(int i = 0; i < blockSize * stage5_TILE; i += blockSize)
+        {
+            if(idx + i < n)
+                smem[tid] += d_idata[idx + i];
+        }
+    }
+
+    __syncthreads();
 
     // Reduce the block using the same part1 and part2 split that we used in reduce_stage4
     // Except, here write explicit statements instead of the for loops
+    if(blockSize >= 1024) {
+        if(threadIdx.x < 512)   { smem[tid] += smem[tid + 512]; __syncthreads(); }
+    }
+    if(blockSize >= 512) {
+        if(threadIdx.x < 256)   { smem[tid] += smem[tid + 256]; __syncthreads(); }
+    }
+    if(blockSize >= 256) {
+        if(threadIdx.x < 128)   { smem[tid] += smem[tid + 128]; __syncthreads(); }
+    }
+    if(blockSize >= 128) {
+        if(threadIdx.x < 64)    { smem[tid] += smem[tid + 64];  __syncthreads(); }
+    }
 
     // Part 2 is the same as reduce_stage4
+    if(tid < 32)
+        warpReduce(smem, tid);
 
     // Copy result of reduction to global memory - Same as reduce_stage4
+    if(tid == 0)
+        d_odata[blockIdx.x] = smem[0];
 }
 
 int main()
